@@ -1,0 +1,57 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Dependencies and Build
+node_modules
+dist
+dist-ssr
+*.local
+*.tsbuildinfo
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Environment & Certificates Security
+.env
+.env.*
+worker/.env
+*.pfx
+*.p12
+certs/
+worker/certs/
+
+# Test CSVs
+empresas_teste.csv
+planilha_teste_solucoes.csv
+
+# Scratch, Temporary & Debug Artifacts
+Nova pasta/
+worker/scratch/
+worker/temp_chrome_profile/
+worker/probe_*.js
+worker/*.png
+worker/*.pdf
+worker/*.html
+worker/*.txt
+worker/*.json
+!worker/package.json
+!worker/package-lock.json
+!worker/tsconfig.json
+worker/src/*.js
+worker/src/*.js.map
+worker/src/*.d.ts
+worker/src/*.d.ts.map
