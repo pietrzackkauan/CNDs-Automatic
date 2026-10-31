@@ -4,6 +4,8 @@ import * as XLSX from "xlsx";
 import { isValidCNPJ, formatCNPJ } from "../lib/cnpj";
 import { supabase } from "../lib/supabase";
 import { encryptText } from "../lib/crypto";
+import { ClearActions } from "../components/ClearActions";
+import { getPanelClearedAt, PANEL_UPDATED_EVENT } from "../lib/clearPanel";
 
 interface CompanyData {
   name: string;
@@ -34,41 +36,67 @@ export function Dashboard() {
     processando: 0,
   });
 
-  // Carrega os números reais do Supabase
+  // Carrega os números reais do Supabase (respeitando se o usuário limpou a visualização do painel)
   const loadMetrics = async () => {
     try {
       const hoje = new Date();
       hoje.setHours(0, 0, 0, 0);
-      const { count: countLotes } = await supabase
+      const clearedAt = getPanelClearedAt();
+      const baseLotesTime = clearedAt && new Date(clearedAt) > hoje ? clearedAt : hoje.toISOString();
+
+      let qLotes = supabase
         .from("lotes")
         .select("*", { count: "exact", head: true })
-        .gte("created_at", hoje.toISOString());
+        .gte("created_at", baseLotesTime);
 
-      const { count: countEmitidas } = await supabase
+      let qEmitidas = supabase
         .from("lote_itens")
         .select("*", { count: "exact", head: true })
         .eq("status", "sucesso");
 
-      const { count: countPositivas } = await supabase
+      let qPositivas = supabase
         .from("lote_itens")
         .select("*", { count: "exact", head: true })
         .eq("status", "sucesso")
-        .in("resultado", ["POSITIVA", "POSITIVA_EFEITO_NEGATIVA"]);
+        .in("resultado", ["POSITIVA", "POSITIVA_EFEITO_NEGATIVA", "POSITIVA COM EFEITO DE NEGATIVA", "IRREGULAR"]);
 
-      const { count: countAlertas } = await supabase
+      let qAlertas = supabase
         .from("lote_itens")
         .select("*", { count: "exact", head: true })
         .eq("status", "alerta");
 
-      const { count: countErros } = await supabase
+      let qErros = supabase
         .from("lote_itens")
         .select("*", { count: "exact", head: true })
         .eq("status", "erro");
 
-      const { count: countProcessando } = await supabase
+      const qProcessando = supabase
         .from("lote_itens")
         .select("*", { count: "exact", head: true })
         .in("status", ["pendente", "processando"]);
+
+      if (clearedAt) {
+        qEmitidas = qEmitidas.gt("created_at", clearedAt);
+        qPositivas = qPositivas.gt("created_at", clearedAt);
+        qAlertas = qAlertas.gt("created_at", clearedAt);
+        qErros = qErros.gt("created_at", clearedAt);
+      }
+
+      const [
+        { count: countLotes },
+        { count: countEmitidas },
+        { count: countPositivas },
+        { count: countAlertas },
+        { count: countErros },
+        { count: countProcessando }
+      ] = await Promise.all([
+        qLotes,
+        qEmitidas,
+        qPositivas,
+        qAlertas,
+        qErros,
+        qProcessando
+      ]);
 
       setMetrics({
         lotesHoje: countLotes || 0,
@@ -108,7 +136,14 @@ export function Dashboard() {
   useEffect(() => {
     loadMetrics();
     const interval = setInterval(loadMetrics, 3000);
-    return () => clearInterval(interval);
+    const handlePanelUpdated = () => {
+      loadMetrics();
+    };
+    window.addEventListener(PANEL_UPDATED_EVENT, handlePanelUpdated);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener(PANEL_UPDATED_EVENT, handlePanelUpdated);
+    };
   }, []);
 
   const paths = [
@@ -309,13 +344,11 @@ export function Dashboard() {
     }
   };
 
-
-
   const validCount = companies.filter(c => c.valid).length;
   const invalidCount = companies.length - validCount;
 
   return (
-    <div translate="no" className="space-y-8 animate-in fade-in duration-500 relative">
+    <div translate="no" className="space-y-6 animate-in fade-in duration-500 relative">
       
       {toastMessage && (
         <div className="fixed bottom-8 right-8 bg-green-600 text-white px-6 py-4 rounded-xl shadow-2xl flex items-center gap-3 animate-in slide-in-from-bottom-8 fade-in z-50">
@@ -323,6 +356,25 @@ export function Dashboard() {
           <span className="font-medium text-sm">{toastMessage}</span>
         </div>
       )}
+
+      {/* Barra de Topo com Ações de Limpeza */}
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+        <div>
+          <h1 className="text-2xl font-bold text-foreground">Painel de Controle</h1>
+          <p className="text-muted-foreground text-sm mt-0.5">
+            Acompanhe as emissões e inicie novos lotes automatizados.
+          </p>
+        </div>
+
+        <ClearActions
+          onSuccess={(msg) => {
+            removeFile();
+            loadMetrics();
+            setToastMessage(msg);
+            setTimeout(() => setToastMessage(""), 4500);
+          }}
+        />
+      </div>
       
       {/* Métricas Reais do Banco de Dados */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
