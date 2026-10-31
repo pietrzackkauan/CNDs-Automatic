@@ -4,7 +4,7 @@ import { supabase } from "../lib/supabase";
 import { ClearActions } from "../components/ClearActions";
 import { getPanelClearedAt, restoreInterfaceHistory, PANEL_UPDATED_EVENT } from "../lib/clearPanel";
 
-// Função para remover acentos e padronizar textos em português
+// Função para remover acentos e padronizar textos em português (case-insensitive e accent-insensitive)
 function normalizar(texto: string = ""): string {
   return texto
     .normalize("NFD")
@@ -39,7 +39,12 @@ function isItemErro(item: any): boolean {
 
 function isDateToken(token: string): boolean {
   const t = token.trim();
-  return /^\d{1,2}[\/\-]\d{1,2}([\/\-]\d{2,4})?$/.test(t) || /^\d{4}-\d{2}-\d{2}$/.test(t);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(t)) return true;
+  const m = t.match(/^(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{2}|\d{4}))?$/);
+  if (!m) return false;
+  const day = parseInt(m[1], 10);
+  const month = parseInt(m[2], 10);
+  return day >= 1 && day <= 31 && month >= 1 && month <= 12;
 }
 
 function matchDateToken(token: string, isoCreatedAt: string): boolean {
@@ -77,43 +82,128 @@ function matchDateToken(token: string, isoCreatedAt: string): boolean {
   return true;
 }
 
+// Extrai os fatores da pesquisa independentemente da ordem e se o usuário separou por ";", "," ou espaços
+function extractSearchFactors(rawQuery: string): string[] {
+  if (!rawQuery || !rawQuery.trim()) return [];
+
+  // Remove espaços acidentais ao redor de pontuação de CNPJ ou data (ex: "60.362.246 / 0001-35")
+  const cleaned = rawQuery.trim().replace(/(\d)\s*([.\/-])\s*(\d)/g, "$1$2$3");
+
+  const preservedPhrases = [
+    "positiva com efeitos de negativa",
+    "positiva com efeito de negativa",
+    "positiva com efeitos",
+    "positiva com efeito",
+    "efeitos de negativa",
+    "efeito de negativa",
+    "em andamento",
+    "na fila",
+    "cnd negativa",
+    "cnd positiva",
+    "sao paulo",
+    "são paulo",
+    "sao mateus",
+    "são mateus",
+    "vila velha",
+    "campo grande",
+    "sao bernardo",
+    "são bernardo",
+    "espirito santo",
+    "espírito santo",
+    "mato grosso do sul"
+  ];
+
+  const tokens: string[] = [];
+  const segments = cleaned.split(/[;,]+/).map((s) => s.trim()).filter(Boolean);
+
+  for (const seg of segments) {
+    let sub = seg;
+    for (const phrase of preservedPhrases) {
+      const regex = new RegExp(`\\b${phrase}\\b`, "ig");
+      const match = sub.match(regex);
+      if (match) {
+        tokens.push(match[0]);
+        sub = sub.replace(regex, " ").trim();
+      }
+    }
+    const words = sub.split(/\s+/).map((w) => w.trim()).filter(Boolean);
+    tokens.push(...words);
+  }
+
+  return tokens;
+}
+
 function matchSingleFactor(rawFactor: string, item: any): boolean {
   const factor = rawFactor.trim();
   if (!factor) return true;
 
   const norm = normalizar(factor);
 
-  // 1. Checagem se o fator é uma Data de Emissão (ex: 31/10/2026, 31/10, 2026-10-31)
+  // 1. Checagem de Data de Emissão (ex: 31/10/2026, 31/10, 2026-10-31, hoje, ontem)
   if (isDateToken(factor)) {
     return matchDateToken(factor, item.created_at);
   }
+  if (norm === "hoje") {
+    return matchDateToken(new Date().toLocaleDateString("pt-BR"), item.created_at);
+  }
+  if (norm === "ontem") {
+    const ontem = new Date();
+    ontem.setDate(ontem.getDate() - 1);
+    return matchDateToken(ontem.toLocaleDateString("pt-BR"), item.created_at);
+  }
 
-  // 2. Checagem se o fator é um Portal específico
+  // 2. Checagem de Portal (aceita singular, plural, maiúsculas/minúsculas e sinônimos)
   const portal = String(item.lotes?.portal || "").toUpperCase();
-  if (["estadual", "estaduais", "sefaz"].includes(norm)) {
+  if (["estadual", "estaduais", "sefaz", "sefa", "icms"].includes(norm)) {
     return portal === "ESTADUAL";
   }
-  if (["federal", "federais", "receita", "pgfn", "rfb"].includes(norm)) {
+  if (["federal", "federais", "receita", "pgfn", "rfb", "uniao", "ecac"].includes(norm)) {
     return portal === "FEDERAL";
   }
   if (["trabalhista", "trabalhistas", "tst", "cndt"].includes(norm)) {
     return portal === "TRABALHISTA";
   }
-  if (["caixa", "fgts", "crf"].includes(norm)) {
+  if (["caixa", "fgts", "crf", "cef"].includes(norm)) {
     return portal === "CAIXA";
   }
-  if (["municipal", "municipais", "prefeitura", "prefeituras"].includes(norm)) {
+  if (["municipal", "municipais", "prefeitura", "prefeituras", "iss"].includes(norm)) {
     return portal === "MUNICIPAL";
   }
 
-  // 3. Checagem se o fator é uma Situação / Resultado
-  if (["negativa", "negativas", "regular", "regulares", "cnd negativa"].includes(norm)) {
+  // 3. Checagem de Situação / Resultado (aceita Positiva, positiva, positivas, Negativa, negativa, etc.)
+  if (
+    [
+      "negativa",
+      "negativas",
+      "negativo",
+      "negativos",
+      "regular",
+      "regulares",
+      "cnd negativa",
+      "limpa",
+      "limpas"
+    ].includes(norm)
+  ) {
     return isItemNegativa(item);
+  }
+  if (
+    [
+      "positiva com efeito",
+      "positiva com efeitos",
+      "positiva com efeito de negativa",
+      "positiva com efeitos de negativa",
+      "efeito de negativa",
+      "efeitos de negativa"
+    ].includes(norm)
+  ) {
+    return String(item.resultado || "").toUpperCase().includes("EFEITO");
   }
   if (
     [
       "positiva",
       "positivas",
+      "positivo",
+      "positivos",
       "pendencia",
       "pendencias",
       "alerta",
@@ -121,25 +211,24 @@ function matchSingleFactor(rawFactor: string, item: any): boolean {
       "irregular",
       "irregulares",
       "debito",
-      "debitos"
+      "debitos",
+      "bloqueio",
+      "cnd positiva"
     ].includes(norm)
   ) {
     return isItemPositiva(item);
   }
-  if (["positiva com efeito", "efeito de negativa", "efeitos de negativa", "positiva com efeitos"].includes(norm)) {
-    return String(item.resultado || "").toUpperCase().includes("EFEITO");
-  }
-  if (["erro", "erros", "falha", "falhas"].includes(norm)) {
+  if (["erro", "erros", "falha", "falhas", "timeout"].includes(norm)) {
     return isItemErro(item);
   }
   if (["cancelada", "canceladas", "cancelado", "cancelados"].includes(norm)) {
     return item.status === "cancelado";
   }
-  if (["andamento", "em andamento", "processando", "pendente", "pendentes", "fila"].includes(norm)) {
+  if (["andamento", "em andamento", "processando", "pendente", "pendentes", "fila", "na fila"].includes(norm)) {
     return item.status === "processando" || item.status === "pendente";
   }
 
-  // 4. Checagem por Nome da Empresa, CNPJ, Município, Inscrição Municipal ou Detalhes da Certidão
+  // 4. Checagem de CNPJ (com ou sem pontuação, completo ou parcial) e demais campos da empresa
   const nomeNorm = normalizar(item.empresas?.nome || "");
   const cnpjOriginal = String(item.empresas?.cnpj || "");
   const cnpjDigits = cnpjOriginal.replace(/\D/g, "");
@@ -152,15 +241,25 @@ function matchSingleFactor(rawFactor: string, item: any): boolean {
   const dataFormatada = item.created_at ? new Date(item.created_at).toLocaleDateString("pt-BR") : "";
 
   const factorDigits = factor.replace(/\D/g, "");
+  const isCnpjLike = /^[\d.\/-]+$/.test(factor) && factorDigits.length > 0;
+
+  if (isCnpjLike) {
+    return (
+      cnpjDigits.includes(factorDigits) ||
+      cnpjOriginal.includes(factor) ||
+      imDigits.includes(factorDigits) ||
+      msgNorm.includes(factorDigits) ||
+      dataFormatada.includes(factor)
+    );
+  }
 
   const matchNome = nomeNorm.includes(norm);
-  const matchCnpj = (factorDigits.length > 0 && cnpjDigits.includes(factorDigits)) || cnpjOriginal.includes(factor);
+  const matchCnpj = (factorDigits.length >= 3 && cnpjDigits.includes(factorDigits)) || cnpjOriginal.toLowerCase().includes(norm);
   const matchMunicipio = municipioNorm.includes(norm);
-  const matchIm = (factorDigits.length > 0 && imDigits.includes(factorDigits)) || (Boolean(imOriginal) && imOriginal.includes(factor));
+  const matchIm = (factorDigits.length > 0 && imDigits.includes(factorDigits)) || imOriginal.toLowerCase().includes(norm);
   const matchMsg = msgNorm.includes(norm) || resNorm.includes(norm) || portalNorm.includes(norm);
-  const matchDataStr = dataFormatada.includes(factor);
 
-  return matchNome || matchCnpj || matchMunicipio || matchIm || matchMsg || matchDataStr;
+  return matchNome || matchCnpj || matchMunicipio || matchIm || matchMsg;
 }
 
 export function Certidoes() {
@@ -270,18 +369,15 @@ export function Certidoes() {
     return itens.filter((i) => new Date(i.created_at).getTime() <= clearTime).length;
   }, [itens, clearedAt]);
 
-  // Fatores combinados digitados na barra de pesquisa (separados por ";")
+  // Fatores combinados extraídos de forma inteligente (qualquer ordem, com ";", "," ou espaços)
   const searchFactors = useMemo(() => {
-    return searchTerm
-      .split(";")
-      .map((f) => f.trim())
-      .filter(Boolean);
+    return extractSearchFactors(searchTerm);
   }, [searchTerm]);
 
-  // Filtragem combinada (Fatores com ";" + Portal + Data + Situação)
+  // Filtragem combinada (Fatores inteligentes em qualquer ordem + Portal + Data + Situação)
   const filteredItens = useMemo(() => {
     return activeItens.filter((item) => {
-      // 1. Combinação de fatores digitados na barra de busca (ex: "Estaduais ; 31/10/2026 ; negativas")
+      // 1. Combinação de todos os fatores digitados (não importa a ordem nem maiúsculas/minúsculas/pontuação)
       if (searchFactors.length > 0) {
         const allMatched = searchFactors.every((factor) => matchSingleFactor(factor, item));
         if (!allMatched) return false;
@@ -385,7 +481,7 @@ export function Certidoes() {
             Acervo de Certidões Emitidas
           </h1>
           <p className="text-muted-foreground text-sm mt-1">
-            Localize e baixe qualquer CND combinando portal, data de emissão, situação, nome ou CNPJ.
+            Localize e baixe qualquer CND combinando portal, data de emissão, situação, nome ou CNPJ em qualquer ordem.
           </p>
         </div>
 
@@ -472,14 +568,14 @@ export function Certidoes() {
       <div className="bg-card border border-border rounded-xl p-4 sm:p-5 shadow-sm space-y-4">
         
         <div className="flex flex-col lg:flex-row gap-3">
-          {/* Campo de pesquisa multi-fator */}
+          {/* Campo de pesquisa multi-fator inteligente */}
           <div className="relative flex-1">
             <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-muted-foreground" size={18} />
             <input 
               type="text" 
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              placeholder="Pesquise por Empresa, CNPJ ou combine fatores com ';' (ex: Estaduais ; 31/10/2026 ; negativas)..." 
+              placeholder="Pesquise por Empresa, CNPJ (com ou sem pontos), Data, Portal ou Situação em qualquer ordem..." 
               className="w-full bg-background border border-border rounded-lg pl-10 pr-4 py-2.5 text-sm focus:border-primary focus:ring-1 focus:ring-primary focus:outline-none transition-all placeholder:text-muted-foreground/70"
             />
           </div>
@@ -544,7 +640,7 @@ export function Certidoes() {
           </div>
         ) : (
           <p className="text-[11px] text-muted-foreground">
-            Dica: Você pode combinar filtros usando <strong>;</strong> — exemplo: <code className="text-foreground/90 bg-secondary/60 px-1.5 py-0.5 rounded">Estaduais ; positivas</code> ou <code className="text-foreground/90 bg-secondary/60 px-1.5 py-0.5 rounded">Estaduais ; 31/10/2026 ; negativas</code>
+            Busca inteligente: digite em qualquer ordem (com ou sem <strong>;</strong>) — ex: <code className="text-foreground/90 bg-secondary/60 px-1.5 py-0.5 rounded">estadual ; positiva</code>, <code className="text-foreground/90 bg-secondary/60 px-1.5 py-0.5 rounded">Negativa 29/10/2026 Estadual</code> ou <code className="text-foreground/90 bg-secondary/60 px-1.5 py-0.5 rounded">60362246000135</code>
           </p>
         )}
 
