@@ -5,6 +5,7 @@ title Central CND - Iniciando Sistema
 
 set "ROOT_DIR=%~dp0"
 if "%ROOT_DIR:~-1%"=="\" set "ROOT_DIR=%ROOT_DIR:~0,-1%"
+set "PATH=%PATH%;C:\Program Files\nodejs;%APPDATA%\npm"
 
 echo ========================================================
 echo      INICIANDO SISTEMA AUTOMATICO DE CNDs
