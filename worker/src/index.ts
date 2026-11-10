@@ -3,12 +3,11 @@ import fs from "fs";
 import { supabase, supabaseUrl, supabaseKey } from "./supabase";
 export { supabase, supabaseUrl, supabaseKey };
 
-// Fallback automático para o Google Chrome / Edge instalado no Windows caso o binário do Playwright não tenha sido baixado
+// Usa automaticamente o Google Chrome / Edge instalado no Windows (dispensa download do ms-playwright)
 const originalChromiumLaunch = chromium.launch.bind(chromium);
 (chromium as any).launch = async (options: any = {}) => {
   try {
-    const defaultExec = chromium.executablePath();
-    if (!options?.executablePath && !options?.channel && (!defaultExec || !fs.existsSync(defaultExec))) {
+    if (!options?.executablePath && !options?.channel) {
       const candidates = [
         "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
         "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
