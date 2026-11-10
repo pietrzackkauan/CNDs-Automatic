@@ -3,11 +3,12 @@ import fs from "fs";
 import { supabase, supabaseUrl, supabaseKey } from "./supabase";
 export { supabase, supabaseUrl, supabaseKey };
 
-// Usa automaticamente o Google Chrome / Edge instalado no Windows (dispensa download do ms-playwright)
+// Fallback automático para o Google Chrome / Edge instalado no Windows caso o binário do Playwright não tenha sido baixado
 const originalChromiumLaunch = chromium.launch.bind(chromium);
 (chromium as any).launch = async (options: any = {}) => {
   try {
-    if (!options?.executablePath && !options?.channel) {
+    const defaultExec = chromium.executablePath();
+    if (!options?.executablePath && !options?.channel && (!defaultExec || !fs.existsSync(defaultExec))) {
       const candidates = [
         "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
         "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
@@ -172,13 +173,28 @@ async function mainLoop() {
 
   while (true) {
     try {
-      // Busca 1 item pendente na fila (ignora cancelados)
-      const { data: itens, error } = await supabase
+      // Busca 1 item pendente na fila (ou resgata item que falhou em outro PC sem navegador instalado)
+      let { data: itens, error } = await supabase
         .from('lote_itens')
         .select('*, lotes(portal)')
         .eq('status', 'pendente')
-        .order('created_at', { ascending: true })
+        .order('created_at', { ascending: false })
         .limit(1);
+
+      if (!error && (!itens || itens.length === 0)) {
+        const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+        const { data: rescued } = await supabase
+          .from('lote_itens')
+          .select('*, lotes(portal)')
+          .eq('status', 'erro')
+          .ilike('mensagem_erro', '%Executable%ms-playwright%')
+          .gt('created_at', oneHourAgo)
+          .order('created_at', { ascending: false })
+          .limit(1);
+        if (rescued && rescued.length > 0) {
+          itens = rescued;
+        }
+      }
 
       if (error) {
         console.error("Erro ao buscar fila:", error.message);
@@ -192,9 +208,9 @@ async function mainLoop() {
         // Trava o registro para 'processando', garantindo que não foi cancelado
         const { data: locked, error: lockErr } = await supabase
           .from('lote_itens')
-          .update({ status: 'processando' })
+          .update({ status: 'processando', mensagem_erro: null })
           .eq('id', item.id)
-          .eq('status', 'pendente')
+          .in('status', ['pendente', 'erro'])
           .select('id, status');
 
         if (lockErr || !locked || locked.length === 0) {
