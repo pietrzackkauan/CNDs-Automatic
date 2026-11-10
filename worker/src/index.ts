@@ -1,5 +1,31 @@
+import { chromium } from "playwright";
+import fs from "fs";
 import { supabase, supabaseUrl, supabaseKey } from "./supabase";
 export { supabase, supabaseUrl, supabaseKey };
+
+// Fallback automático para o Google Chrome / Edge instalado no Windows caso o binário do Playwright não tenha sido baixado
+const originalChromiumLaunch = chromium.launch.bind(chromium);
+(chromium as any).launch = async (options: any = {}) => {
+  try {
+    const defaultExec = chromium.executablePath();
+    if (!options?.executablePath && !options?.channel && (!defaultExec || !fs.existsSync(defaultExec))) {
+      const candidates = [
+        "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+        "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+        process.env.LOCALAPPDATA ? `${process.env.LOCALAPPDATA}\\Google\\Chrome\\Application\\chrome.exe` : "",
+        "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+        "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
+      ].filter(Boolean);
+      for (const candidate of candidates) {
+        if (fs.existsSync(candidate)) {
+          options = { ...options, executablePath: candidate };
+          break;
+        }
+      }
+    }
+  } catch {}
+  return originalChromiumLaunch(options);
+};
 import { processarTST } from "./tst";
 import { processarFederal } from "./federal";
 import { processarFGTS } from "./fgts";
